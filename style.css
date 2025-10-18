@@ -1,0 +1,23 @@
+body {
+  background: #222;
+  color: white;
+  text-align: center;
+  font-family: sans-serif;
+}
+
+#world {
+  position: relative;
+  width: 800px;
+  height: 500px;
+  margin: 20px auto;
+  background: linear-gradient(to bottom, #3090ff 0px, #3090ff 50px, #333 50px, #333 450px, #ff8080 450px, #ff8080 500px);
+  border: 3px solid white;
+  overflow: hidden;
+}
+
+.creet {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
