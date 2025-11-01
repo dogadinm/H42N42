@@ -27,6 +27,24 @@ let create_creet color x y =
   Dom.appendChild world d;
   d
 
+(* Проверка пересечения двух Creet'ов *)
+let is_touching st1 st2 =
+  let size = 20 in
+  abs (st1.x - st2.x) < size && abs (st1.y - st2.y) < size
+
+(* Попытка заразить других *)
+let try_infect_others (d, st) =
+  let _ = d in
+  if st.infected then (
+    List.iter (fun (_, other) ->
+      if not other.infected && not other.is_being_dragged then (
+        if is_touching st other && Random.float 1.0 < 0.02 then (
+          other.infected <- true;
+        )
+      )
+    ) !creets
+  )
+
 (* Случайная небольшая смена направления *)
 let maybe_change_direction state =
   if Random.float 1.0 < 0.01 then (  (* примерно 1% шанс на тик *)
@@ -67,8 +85,14 @@ let rec move_creet d state =
     (* Заражение в верхней зоне — только если не перетаскивается *)
     if state.y < 50 && not state.infected && not state.is_being_dragged then (
       state.infected <- true;
-      d##.style##.backgroundColor := Js.string "red"
     );
+
+    (* Попытка заразить других при контакте *)
+    try_infect_others (d, state);
+
+    (* Обновляем цвет в соответствии с состоянием *)
+    d##.style##.backgroundColor :=
+      Js.string (if state.infected then "red" else "lime");
 
     d##.style##.left := Js.string (string_of_int state.x ^ "px");
     d##.style##.top := Js.string (string_of_int state.y ^ "px");
@@ -101,7 +125,6 @@ let make_draggable d state =
       let h = world##.clientHeight in
       if state.is_being_dragged && state.infected && state.y > h - 70 then (
         state.infected <- false;
-        d##.style##.backgroundColor := Js.string "lime"
       );
       state.is_being_dragged <- false;
       Lwt.return_unit)
