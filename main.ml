@@ -4,114 +4,172 @@ open Js_of_ocaml_lwt
 let document = Dom_html.document
 let world = Dom_html.getElementById_exn "world"
 
-(* Состояние существа *)
+(* Состояние каждого Creet *)
 type creet_state = {
   mutable x: int;
   mutable y: int;
   mutable dx: int;
   mutable dy: int;
   mutable infected: bool;
+  mutable berserk: bool;
+  mutable mean: bool;
+  mutable size: int;
   mutable is_being_dragged: bool;
+  mutable invulnerable: bool;
 }
 
 (* Все Creet'ы *)
 let creets : (Dom_html.divElement Js.t * creet_state) list ref = ref []
 
 (* Создание DOM-элемента *)
-let create_creet color x y =
+let create_creet color x y size =
   let d = Dom_html.createDiv document in
   d##.className := Js.string "creet";
   d##.style##.backgroundColor := Js.string color;
+  d##.style##.position := Js.string "absolute";
+  d##.style##.width := Js.string (string_of_int size ^ "px");
+  d##.style##.height := Js.string (string_of_int size ^ "px");
+  d##.style##.borderRadius := Js.string "50%";
   d##.style##.left := Js.string (string_of_int x ^ "px");
   d##.style##.top := Js.string (string_of_int y ^ "px");
   Dom.appendChild world d;
   d
 
-(* Проверка пересечения двух Creet'ов *)
+(* Проверка соприкосновения *)
 let is_touching st1 st2 =
-  let size = 20 in
-  abs (st1.x - st2.x) < size && abs (st1.y - st2.y) < size
+  let r1 = st1.size / 2 and r2 = st2.size / 2 in
+  let dx = (st1.x + r1) - (st2.x + r2) in
+  let dy = (st1.y + r1) - (st2.y + r2) in
+  let dist2 = dx * dx + dy * dy in
+  dist2 < (r1 + r2) * (r1 + r2)
+
+(* Berserk растёт постепенно *)
+let berserk_growth d st =
+  let initial_size = st.size in
+  let target_size = initial_size * 4 in
+  let rec loop () =
+    if st.berserk && st.size < target_size then (
+      st.size <- st.size + 1;
+      d##.style##.width := Js.string (string_of_int st.size ^ "px");
+      d##.style##.height := Js.string (string_of_int st.size ^ "px");
+      let%lwt () = Lwt_js.sleep 0.2 in
+      loop ()
+    ) else Lwt.return_unit
+  in
+  loop ()
+
+(* Mean преследует ближайших здоровых *)
+let find_closest_healthy st =
+  let best = ref None and min_d = ref max_int in
+  List.iter (fun (_, other) ->
+    if not other.infected && not other.is_being_dragged then (
+      let dx = other.x - st.x and dy = other.y - st.y in
+      let d = dx * dx + dy * dy in
+      if d < !min_d then (min_d := d; best := Some other)
+    )
+  ) !creets;
+  !best
+
+let mean_chase st =
+  match find_closest_healthy st with
+  | Some t ->
+      let dx = t.x - st.x and dy = t.y - st.y in
+      if dx <> 0 then st.dx <- if dx > 0 then 2 else -2;
+      if dy <> 0 then st.dy <- if dy > 0 then 2 else -2;
+  | None -> ()
+
+(* Заражение Creet'а *)
+let infect_creet (d, st) =
+  if not st.infected && not st.invulnerable && not st.is_being_dragged then (
+    st.infected <- true;
+    d##.style##.backgroundColor := Js.string "red";
+
+    let r = Random.float 1.0 in
+    if r < 0.10 then (
+      (* Berserk *)
+      st.berserk <- true;
+      st.mean <- false;
+      d##.style##.backgroundColor := Js.string "purple";
+      Lwt.async (fun () -> berserk_growth d st)
+    )
+    else if r < 0.20 then (
+      (* Mean *)
+      st.mean <- true;
+      st.berserk <- false;
+      st.size <- int_of_float (float st.size *. 0.85);
+      d##.style##.backgroundColor := Js.string "orange";
+      d##.style##.width := Js.string (string_of_int st.size ^ "px");
+      d##.style##.height := Js.string (string_of_int st.size ^ "px");
+    )
+  )
 
 (* Попытка заразить других *)
-let try_infect_others (d, st) =
-  let _ = d in
+let try_infect_others (_, st) =
   if st.infected then (
-    List.iter (fun (_, other) ->
-      if not other.infected && not other.is_being_dragged then (
-        if is_touching st other && Random.float 1.0 < 0.02 then (
-          other.infected <- true;
-        )
-      )
+    List.iter (fun (d2, st2) ->
+      if not st2.infected && not st2.invulnerable && not st2.is_being_dragged then
+        if is_touching st st2 && Random.float 1.0 < 0.02 then
+          infect_creet (d2, st2)
     ) !creets
   )
 
-(* Случайная небольшая смена направления *)
-let maybe_change_direction state =
-  if Random.float 1.0 < 0.01 then (  (* примерно 1% шанс на тик *)
-    let new_dx = (Random.int 5) - 2 in
-    let new_dy = (Random.int 5) - 2 in
-    if new_dx <> 0 then state.dx <- new_dx;
-    if new_dy <> 0 then state.dy <- new_dy;
-  )
-  else if state.dx = 0 || state.dy = 0 then (  (* страховка от “залипания” *)
-    state.dx <- if state.dx = 0 then (if Random.bool () then 1 else -1) else state.dx;
-    state.dy <- if state.dy = 0 then (if Random.bool () then 1 else -1) else state.dy;
-  )
-
 (* Автоматическое движение *)
-let rec move_creet d state =
-  if not state.is_being_dragged then (
-    let w = world##.clientWidth and h = world##.clientHeight in
+let rec move_creet d st =
+  if not st.is_being_dragged then (
+    if st.mean then mean_chase st;
 
-    (* Редко меняем направление *)
-    maybe_change_direction state;
-
-    let nx = state.x + state.dx and ny = state.y + state.dy in
-
-    let dx, nx =
-      if nx < 0 || nx > w - 20 then (-state.dx, max 0 (min (w - 20) nx))
-      else (state.dx, nx)
-    in
-    let dy, ny =
-      if ny < 0 || ny > h - 20 then (-state.dy, max 0 (min (h - 20) ny))
-      else (state.dy, ny)
-    in
-
-    state.dx <- dx;
-    state.dy <- dy;
-    state.x <- nx;
-    state.y <- ny;
-
-    (* Заражение в верхней зоне — только если не перетаскивается *)
-    if state.y < 50 && not state.infected && not state.is_being_dragged then (
-      state.infected <- true;
+    (* случайная смена направления *)
+    if Random.float 1.0 < 0.01 then (
+      st.dx <- (Random.int 5) - 2;
+      st.dy <- (Random.int 5) - 2;
     );
 
-    (* Попытка заразить других при контакте *)
-    try_infect_others (d, state);
+    let w = world##.clientWidth and h = world##.clientHeight in
+    let nx = st.x + st.dx and ny = st.y + st.dy in
+    let dx, nx =
+      if nx < 0 || nx > w - st.size then (-st.dx, max 0 (min (w - st.size) nx))
+      else (st.dx, nx)
+    in
+    let dy, ny =
+      if ny < 0 || ny > h - st.size then (-st.dy, max 0 (min (h - st.size) ny))
+      else (st.dy, ny)
+    in
+    st.dx <- dx; st.dy <- dy; st.x <- nx; st.y <- ny;
 
-    (* Обновляем цвет в соответствии с состоянием *)
-    d##.style##.backgroundColor :=
-      Js.string (if state.infected then "red" else "lime");
+    (* заражение при входе в верхнюю зону *)
+    if st.y < 50 && not st.infected && not st.invulnerable then
+      infect_creet (d, st);
 
-    d##.style##.left := Js.string (string_of_int state.x ^ "px");
-    d##.style##.top := Js.string (string_of_int state.y ^ "px");
+    (* лечение при опускании вниз, только если перетащен пользователем *)
+    if st.infected && st.is_being_dragged && st.y > h - 70 then (
+      st.infected <- false;
+      st.berserk <- false;
+      st.mean <- false;
+      st.size <- 20;
+      d##.style##.backgroundColor := Js.string "lime";
+      d##.style##.width := Js.string "20px";
+      d##.style##.height := Js.string "20px";
+    );
+
+    d##.style##.left := Js.string (string_of_int st.x ^ "px");
+    d##.style##.top := Js.string (string_of_int st.y ^ "px");
   );
 
-  let delay = if state.infected then 0.05 else 0.03 in
+  try_infect_others (d, st);
+  let delay = if st.infected then 0.05 else 0.03 in
   let%lwt () = Lwt_js.sleep delay in
-  move_creet d state
+  move_creet d st
 
 (* Перетаскивание *)
-let make_draggable d state =
+let make_draggable d st =
   let open Lwt_js_events in
   let offset_x = ref 0 and offset_y = ref 0 in
   let world_rect = ref (world##getBoundingClientRect) in
 
-  (* Нажатие мыши — начать перетаскивание *)
   Lwt.async (fun () ->
     mousedowns d (fun ev _ ->
-      state.is_being_dragged <- true;
+      st.is_being_dragged <- true;
+      st.invulnerable <- true;
       world_rect := world##getBoundingClientRect;
       let rect = d##getBoundingClientRect in
       offset_x := int_of_float (float_of_int ev##.clientX -. rect##.left);
@@ -119,57 +177,54 @@ let make_draggable d state =
       Lwt.return_unit)
   );
 
-  (* Отпускание мыши — закончить перетаскивание и возможно вылечить *)
   Lwt.async (fun () ->
     mouseups document (fun _ _ ->
-      let h = world##.clientHeight in
-      if state.is_being_dragged && state.infected && state.y > h - 70 then (
-        state.infected <- false;
-      );
-      state.is_being_dragged <- false;
+      st.is_being_dragged <- false;
+      st.invulnerable <- false;
       Lwt.return_unit)
   );
 
-  (* Движение мыши — обновляем позицию *)
   Lwt.async (fun () ->
     mousemoves document (fun ev _ ->
-      if state.is_being_dragged then (
+      if st.is_being_dragged then (
         let wr = !world_rect in
         let nx = int_of_float (float_of_int ev##.clientX -. wr##.left) - !offset_x in
         let ny = int_of_float (float_of_int ev##.clientY -. wr##.top) - !offset_y in
-        state.x <- nx;
-        state.y <- ny;
+        st.x <- nx;
+        st.y <- ny;
         d##.style##.left := Js.string (string_of_int nx ^ "px");
         d##.style##.top := Js.string (string_of_int ny ^ "px");
       );
       Lwt.return_unit)
   );
-
   Lwt.return_unit
 
 (* Добавление нового Creet *)
 let add_creet color x y =
-  let d = create_creet color x y in
-  let state = {
+  let size = 20 in
+  let d = create_creet color x y size in
+  let st = {
     x; y;
     dx = (let v = (Random.int 5) - 2 in if v = 0 then 1 else v);
     dy = (let v = (Random.int 5) - 2 in if v = 0 then 1 else v);
     infected = false;
+    berserk = false;
+    mean = false;
+    size;
     is_being_dragged = false;
+    invulnerable = false;
   } in
-  creets := (d, state) :: !creets;
-  Lwt.async (fun () -> move_creet d state);
-  Lwt.async (fun () -> make_draggable d state)
+  creets := (d, st) :: !creets;
+  Lwt.async (fun () -> move_creet d st);
+  Lwt.async (fun () -> make_draggable d st)
 
 (* Размножение *)
 let rec reproduction_loop () =
   let healthy_exists = List.exists (fun (_, st) -> not st.infected) !creets in
-  if healthy_exists then (
-    if Random.float 1.0 < 0.3 then (
-      let x = Random.int (world##.clientWidth - 30) in
-      let y = Random.int (world##.clientHeight - 30) in
-      add_creet "lime" x y;
-    )
+  if healthy_exists && Random.float 1.0 < 0.3 then (
+    let x = Random.int (world##.clientWidth - 30) in
+    let y = Random.int (world##.clientHeight - 30) in
+    add_creet "lime" x y;
   );
   let%lwt () = Lwt_js.sleep 2.0 in
   reproduction_loop ()
