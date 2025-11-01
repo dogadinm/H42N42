@@ -27,10 +27,27 @@ let create_creet color x y =
   Dom.appendChild world d;
   d
 
+(* Случайная небольшая смена направления *)
+let maybe_change_direction state =
+  if Random.float 1.0 < 0.01 then (  (* примерно 1% шанс на тик *)
+    let new_dx = (Random.int 5) - 2 in
+    let new_dy = (Random.int 5) - 2 in
+    if new_dx <> 0 then state.dx <- new_dx;
+    if new_dy <> 0 then state.dy <- new_dy;
+  )
+  else if state.dx = 0 || state.dy = 0 then (  (* страховка от “залипания” *)
+    state.dx <- if state.dx = 0 then (if Random.bool () then 1 else -1) else state.dx;
+    state.dy <- if state.dy = 0 then (if Random.bool () then 1 else -1) else state.dy;
+  )
+
 (* Автоматическое движение *)
 let rec move_creet d state =
   if not state.is_being_dragged then (
     let w = world##.clientWidth and h = world##.clientHeight in
+
+    (* Редко меняем направление *)
+    maybe_change_direction state;
+
     let nx = state.x + state.dx and ny = state.y + state.dy in
 
     let dx, nx =
@@ -53,7 +70,6 @@ let rec move_creet d state =
       d##.style##.backgroundColor := Js.string "red"
     );
 
-    (* Больница внизу больше не лечит автоматически *)
     d##.style##.left := Js.string (string_of_int state.x ^ "px");
     d##.style##.top := Js.string (string_of_int state.y ^ "px");
   );
@@ -76,7 +92,6 @@ let make_draggable d state =
       let rect = d##getBoundingClientRect in
       offset_x := int_of_float (float_of_int ev##.clientX -. rect##.left);
       offset_y := int_of_float (float_of_int ev##.clientY -. rect##.top);
-      (* Во время перетаскивания Creet невосприимчив к заражению *)
       Lwt.return_unit)
   );
 
