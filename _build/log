@@ -13,8 +13,8 @@
 #  ; build_dir = In_build_dir "default"
 #  ; instrument_with = []
 #  }
-$ /home/dogadinm/.opam/eliom/bin/ocamlc.opt -config > /tmp/dune_d1f384_output
-$ /home/dogadinm/.opam/eliom/bin/js_of_ocaml --version > /tmp/dune_44c413_output
+$ /home/dogadinm/.opam/eliom/bin/ocamlc.opt -config > /tmp/dune_6ec1a3_output
+$ /home/dogadinm/.opam/eliom/bin/js_of_ocaml --version > /tmp/dune_b0248d_output
 $ (cd _build/default && .ppx/cd12b994dea2c556ff46902df37f513a/ppx.exe -o main.pp.ml --impl main.ml -corrected-suffix .ppx-corrected -diff-cmd - -dump-ast)
 $ (cd _build/default && /home/dogadinm/.opam/eliom/bin/ocamlc.opt -w @1..3@5..28@30..39@43@46..47@49..57@61..62-40 -strict-sequence -strict-formats -short-paths -keep-locs -g -bin-annot -I .main.eobjs/byte -I /home/dogadinm/.opam/eliom/lib/js_of_ocaml -I /home/dogadinm/.opam/eliom/lib/js_of_ocaml-compiler/runtime -I /home/dogadinm/.opam/eliom/lib/js_of_ocaml-lwt -I /home/dogadinm/.opam/eliom/lib/lwt -intf-suffix .ml -no-alias-deps -opaque -o .main.eobjs/byte/dune__exe__Main.cmo -c -impl main.pp.ml)
 $ (cd _build/default && /home/dogadinm/.opam/eliom/bin/js_of_ocaml --source-map-inline --pretty -o .main.eobjs/jsoo/dune__exe__Main.cmo.js .main.eobjs/byte/dune__exe__Main.cmo)

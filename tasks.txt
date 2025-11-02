@@ -1,0 +1,53 @@
+Creets must move randomly on a rectangular space of the browser’s window, bordered 
+by a toxic river on top and a hospital where the sick Creets will get healed on the bottom.
+Unlucky Creets that will touch the river will get sick. If so, they change color, become 
+contagious and contaminate the ones they touch with a probability.
+The goal of the game is to last as long as possible before all the unlucky Creets get 
+contaminated. When this happens, the game is over.
+
+• Creets reproduce spontaneously as long as one healthy Creet is left. As long as
+they stay healthy, they never die.+
+
+• User must be able to grab-move Creets with the mouse to keep them away from
+the river and take the sick ones to the hospital.+
+
+• A sick Creet that randomly touches the hospital won’t be healed. Only the ones
+the user has taken to the hospital will be.+
+
+• When a Creet is grabbed by the user, it becomes “invulnerable” and cannot be
+contaminated if it’s healthy.+
+
+• A Creet moves in straight lines but might randomly change direction. These unexpected changes must not happen too often to help the player plan the Creets’ path,
+but still create surprise somehow.+
+
+• A Creet that touches the edges of the game area rebounds realistically, whichever
+edge it is.+
+
+• A Creet that gets contaminated instantly changes color and gets 15% slower.+-
+
+• A contaminated Creet that touches a healthy Creet has a 2% risk of contaminating
+it at each iteration. There is no collision ("no rebound"); Creets walk over each
+other.+-
+
+• A Creet that gets sick has a 10% risk of becoming berserk! In that case, the Creet’s color changes from the contaminated one, and its diameter slowly grows until it has  quadrupled by the end of its life, making it more likely to contaminate others, etc.
+
+• Also, a Creet that gets contaminated has a 10% risk of becoming mean! When this happens, the Creet gets a different color from the contaminated Creets and the Berserks. It shrinks 15% smaller than its regular size but starts running after the other healthy Creets to contaminate them willingly! Nasty little Creet! the
+other healthy Creets to contaminate them willingly! Nasty little Creet!
+
+• A contaminated Creet cannot be both Berserk and mean.
+
+• Because of the panic, Creets accelerate in time so the difficulty level increases along
+until the player gets overwhelmed ... and loses. You’re free to set the balance as
+you see fit. The game should be very easy at first and grow harder with time. The
+player should feel confident in the beginning, until the game turns into a nightmare
+demanding relentless clicking skills.
+
+• You will choose the number of Creets according to the size you will give them to
+offer a balanced playability and a clear display. Very small Creets, for instance,
+would probably make the game a little dull.
+
+• You can adapt the instructed probabilities if and only if you feel like it will help
+the balance of the game without changing its nature.
+
+• When no living or healthy Creet is left, the game stops with a displayed GAME
+OVER message.

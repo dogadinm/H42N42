@@ -82,6 +82,13 @@ let mean_chase st =
 let infect_creet (d, st) =
   if not st.infected && not st.invulnerable && not st.is_being_dragged then (
     st.infected <- true;
+
+    (* Заражённый замедляется на 15% *)
+    st.dx <- int_of_float (float st.dx *. 0.85);
+    st.dy <- int_of_float (float st.dy *. 0.85);
+    if st.dx = 0 then st.dx <- 1;
+    if st.dy = 0 then st.dy <- 1;
+
     d##.style##.backgroundColor := Js.string "red";
 
     let r = Random.float 1.0 in
@@ -179,8 +186,21 @@ let make_draggable d st =
 
   Lwt.async (fun () ->
     mouseups document (fun _ _ ->
-      st.is_being_dragged <- false;
-      st.invulnerable <- false;
+      if st.is_being_dragged then (
+        st.is_being_dragged <- false;
+        st.invulnerable <- false;
+        (* Проверим, что отпущен в зоне хила *)
+        let h = world##.clientHeight in
+        if st.infected && st.y > h - 70 then (
+          st.infected <- false;
+          st.berserk <- false;
+          st.mean <- false;
+          st.size <- 20;
+          d##.style##.backgroundColor := Js.string "lime";
+          d##.style##.width := Js.string "20px";
+          d##.style##.height := Js.string "20px";
+        )
+      );
       Lwt.return_unit)
   );
 
@@ -218,19 +238,61 @@ let add_creet color x y =
   Lwt.async (fun () -> move_creet d st);
   Lwt.async (fun () -> make_draggable d st)
 
+(* GAME OVER — когда не осталось здоровых *)
+let display_game_over () =
+  let msg = Dom_html.createDiv document in
+  msg##.innerHTML := Js.string "<h1>GAME OVER</h1>";
+  msg##.style##.position := Js.string "absolute";
+  msg##.style##.top := Js.string "50%";
+  msg##.style##.left := Js.string "50%";
+  msg##.style##.transform := Js.string "translate(-50%, -50%)";
+  msg##.style##.fontSize := Js.string "60px";
+  msg##.style##.padding := Js.string "20px";
+  msg##.style##.color := Js.string "white";
+  msg##.style##.background := Js.string "rgba(0,0,0,0.7)";
+  msg##.style##.border := Js.string "3px solid white";
+  msg##.style##.borderRadius := Js.string "12px";
+  Dom.appendChild world msg
+
+let check_game_over () =
+  let healthy_exists = List.exists (fun (_, st) -> not st.infected) !creets in
+  if not healthy_exists then (
+    display_game_over ();
+    List.iter (fun (_, st) -> st.is_being_dragged <- true) !creets;
+    Lwt.fail Exit   (* Останавливаем циклы *)
+  ) else
+    Lwt.return_unit
+
 (* Размножение *)
 let rec reproduction_loop () =
+  let%lwt () = check_game_over () in
+
   let healthy_exists = List.exists (fun (_, st) -> not st.infected) !creets in
   if healthy_exists && Random.float 1.0 < 0.3 then (
     let x = Random.int (world##.clientWidth - 30) in
     let y = Random.int (world##.clientHeight - 30) in
     add_creet "lime" x y;
   );
+
   let%lwt () = Lwt_js.sleep 2.0 in
   reproduction_loop ()
+
+(* Постепенное ускорение всех Creets *)
+let rec difficulty_loop () =
+  List.iter (fun (_, st) ->
+    if not st.is_being_dragged then (
+      st.dx <- st.dx + (if st.dx >= 0 then 1 else -1);
+      st.dy <- st.dy + (if st.dy >= 0 then 1 else -1)
+    )
+  ) !creets;
+
+  (* Каждые 12 секунд игра становится немного сложнее *)
+  let%lwt () = Lwt_js.sleep 12.0 in
+  difficulty_loop ()
 
 (* main *)
 let () =
   Random.self_init ();
   add_creet "lime" 200 200;
-  Lwt.async reproduction_loop
+  Lwt.async reproduction_loop;
+  Lwt.async difficulty_loop
