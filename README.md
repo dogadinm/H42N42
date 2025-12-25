@@ -52,3 +52,6 @@ Here's some help on how to work with this basic distillery project:
 
  - Run the server on the deployed project
      $ make run
+
+eliom-distillery -name mysite -template basic.ppx
+opam install ocsipersist-dbm-config
