@@ -47,7 +47,7 @@ let reproduction_interval = 5.0    (* каждые N секунд, пока ес
 let panic_speed_increase_per_sec = 0.03  (* глобальное ускорение с течением времени *)
 
 (* смерть заражённых *)
-let infected_ttl = 25.0 (* заражённые (Sick/Mean/Berserk) умирают через N секунд *)
+let infected_ttl = 25.0 (* заражённые (Sick/Mean) умирают через N секунд *)
 
 (* размеры зон (внутри div#game) *)
 let river_height = 80.0      (* верхняя токсичная зона *)
