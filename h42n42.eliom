@@ -45,6 +45,9 @@ let mean_prob = 0.10
 let reproduction_interval = 5.0    (* каждые N секунд, пока есть здоровые *)
 let panic_speed_increase_per_sec = 0.03  (* глобальное ускорение с течением времени *)
 
+(* смерть заражённых *)
+let infected_ttl = 25.0 (* заражённые (Sick/Mean/Berserk) умирают через N секунд *)
+
 (* размеры зон (внутри div#game) *)
 let river_height = 80.0      (* верхняя токсичная зона *)
 let hospital_height = 80.0   (* нижняя зона больницы *)
@@ -68,6 +71,7 @@ type creep = {
   mutable infection_age : float;  (* сколько времени заражён *)
   elt             : Html.divElement Js.t;
   mutable grabbed : bool;
+  mutable alive   : bool;
 }
 
 (* глобальные ссылки *)
@@ -125,13 +129,28 @@ let is_contaminated_state = function
   | Healthy -> false
   | Sick | Berserk | Mean -> true
 
-let is_healthy c = (c.state = Healthy)
+let is_healthy c = c.alive && (c.state = Healthy)
 
 let any_healthy () =
   List.exists (fun c -> is_healthy c) !creeps
 
 let healthy_count () =
   List.fold_left (fun acc c -> if is_healthy c then acc + 1 else acc) 0 !creeps
+
+(* --- убийство крипа --- *)
+
+let kill_creep (c : creep) =
+  if not c.alive then ()
+  else begin
+    c.alive <- false;
+    c.grabbed <- false;
+    (* убрать из DOM *)
+    Js.Opt.iter c.elt##.parentNode (fun p ->
+      Dom.removeChild p c.elt
+    );
+    (* убрать из списка *)
+    creeps := List.filter (fun x -> x != c) !creeps
+  end
 
 (* --- заражение, лечение, изменение состояния --- *)
 
@@ -151,7 +170,7 @@ let recalc_velocity_with_panic (c : creep) =
   c.vy <- c.vy *. k
 
 let infect (c : creep) =
-  if not (is_healthy c) then ()
+  if (not c.alive) || not (c.state = Healthy) then ()
   else begin
     c.infection_age <- 0.0;
     (* медленнее *)
@@ -174,20 +193,23 @@ let infect (c : creep) =
   end
 
 let heal (c : creep) =
-  c.state <- Healthy;
-  c.infection_age <- 0.0;
-  c.size <- c.base_size;
-  (* вернуть нормальную скорость в том же направлении *)
-  let speed = base_speed *. speed_factor () in
-  let norm = sqrt (c.vx *. c.vx +. c.vy *. c.vy) in
-  let dirx, diry =
-    if norm = 0.0 then (1.0, 0.0)
-    else (c.vx /. norm, c.vy /. norm)
-  in
-  c.vx <- speed *. dirx;
-  c.vy <- speed *. diry;
-  set_state_color c;
-  update_dom c
+  if not c.alive then ()
+  else begin
+    c.state <- Healthy;
+    c.infection_age <- 0.0;
+    c.size <- c.base_size;
+    (* вернуть нормальную скорость в том же направлении *)
+    let speed = base_speed *. speed_factor () in
+    let norm = sqrt (c.vx *. c.vx +. c.vy *. c.vy) in
+    let dirx, diry =
+      if norm = 0.0 then (1.0, 0.0)
+      else (c.vx /. norm, c.vy /. norm)
+    in
+    c.vx <- speed *. dirx;
+    c.vy <- speed *. diry;
+    set_state_color c;
+    update_dom c
+  end
 
 (* --- зоны --- *)
 
@@ -236,6 +258,7 @@ let make_creep (game_div : Html.divElement Js.t) : creep =
     infection_age = 0.0;
     elt;
     grabbed = false;
+    alive = true;
   } in
   set_state_color c;
   update_dom c;
@@ -243,10 +266,9 @@ let make_creep (game_div : Html.divElement Js.t) : creep =
 
 (* --- динамика --- *)
 
-let update_berserk_growth (c : creep) dt =
+let update_berserk_growth (c : creep) =
   match c.state with
   | Berserk ->
-    c.infection_age <- c.infection_age +. dt;
     (* пусть за 20 секунд растёт до 4x *)
     let t = c.infection_age in
     let factor =
@@ -258,12 +280,12 @@ let update_berserk_growth (c : creep) dt =
   | _ -> ()
 
 let chase_nearest_healthy (c : creep) =
-  if c.state <> Mean then () else
+  if (not c.alive) || c.state <> Mean then () else
   let healthy_list =
     List.filter (fun h -> is_healthy h && (not h.grabbed)) !creeps
   in
   match healthy_list with
-  | [] -> () (* никого нет, пусть летит по старой траектории *)
+  | [] -> () (* никого нет *)
   | _ ->
     let cx, cy = center c in
     let best =
@@ -320,27 +342,29 @@ let bounce_from_walls (c : creep) =
   end
 
 let handle_river_contamination (c : creep) =
-  if c.grabbed then () else
-  if is_healthy c && is_in_river c then infect c
+  if c.grabbed || not c.alive then () else
+  if c.state = Healthy && is_in_river c then infect c
 
 let handle_contact_infection (src : creep) =
-  if (not (is_contaminated_state src.state)) || src.grabbed then ()
+  if (not src.alive) then ()
+  else if (not (is_contaminated_state src.state)) || src.grabbed then ()
   else
     List.iter
       (fun dst ->
-         if is_healthy dst && (not dst.grabbed) then
+         if dst.alive && dst.state = Healthy && (not dst.grabbed) then
            let rsum = radius src +. radius dst in
            if dist2 src dst <= rsum *. rsum then
              if Random.float 1.0 < infection_prob_per_tick then
                infect dst)
       !creeps
 
-(* --- перетаскивание мышью через Lwt_js_event --- *)
+(* --- перетаскивание мышью --- *)
 
 let init_drag (c : creep) =
   let open Lwt_js_events in
   let _ =
     mousedowns c.elt (fun ev _ ->
+        if not c.alive then Lwt.return_unit else
         let ev = (ev :> Html.mouseEvent Js.t) in
         c.grabbed <- true;
         let start_x = c.x in
@@ -351,6 +375,7 @@ let init_drag (c : creep) =
         let rec drag_loop () =
           Lwt.pick [
             (mousemove document >>= fun ev_move ->
+             if (not c.alive) then Lwt.return_unit else
              let evm = (ev_move :> Html.mouseEvent Js.t) in
              let mx = float_of_int evm##.clientX in
              let my = float_of_int evm##.clientY in
@@ -365,7 +390,7 @@ let init_drag (c : creep) =
              let _ = (ev_up :> Html.mouseEvent Js.t) in
              c.grabbed <- false;
              (* при отпускании в больнице лечим заражённых *)
-             if is_in_hospital c && is_contaminated_state c.state then heal c;
+             if c.alive && is_in_hospital c && is_contaminated_state c.state then heal c;
              Lwt.return_unit)
           ]
         in
@@ -375,41 +400,66 @@ let init_drag (c : creep) =
   in
   ()
 
-(* --- поток для каждого крипа --- *)
+(* --- глобальный поток времени (чтобы не умножалось на число крипов) --- *)
 
-let rec creep_thread (c : creep) =
+let rec time_thread () =
   if !game_over then Lwt.return_unit
   else
     let%lwt () = Lwt_js.sleep (1.0 /. 60.0) in
-    if !game_over then Lwt.return_unit
+    elapsed_time := !elapsed_time +. (1.0 /. 60.0);
+    time_thread ()
+
+(* --- поток для каждого крипа --- *)
+
+let rec creep_thread (c : creep) =
+  if !game_over || not c.alive then Lwt.return_unit
+  else
+    let%lwt () = Lwt_js.sleep (1.0 /. 60.0) in
+    if !game_over || not c.alive then Lwt.return_unit
     else begin
       let dt = 1.0 /. 60.0 in
-      elapsed_time := !elapsed_time +. dt;
 
-      if not c.grabbed then begin
-        (* паника — ускорение *)
-        recalc_velocity_with_panic c;
-        (* случайное изменение направления *)
-        maybe_random_change_dir c;
-        (* злые преследуют здоровых *)
-        chase_nearest_healthy c;
-        (* шаг движения *)
-        c.x <- c.x +. c.vx *. dt;
-        c.y <- c.y +. c.vy *. dt;
-        (* отскоки *)
-        bounce_from_walls c;
-        (* река заражает *)
-        handle_river_contamination c;
-        (* рост берсерка *)
-        update_berserk_growth c dt;
-        (* обновление DOM *)
-        update_dom c;
+      (* возраст заражения и смерть по таймеру *)
+      if is_contaminated_state c.state then begin
+        c.infection_age <- c.infection_age +. dt;
+        if c.infection_age >= infected_ttl then begin
+          kill_creep c;
+        end
       end;
 
-      (* заражаем других при контакте *)
-      handle_contact_infection c;
+      if not c.alive then Lwt.return_unit else begin
+        if not c.grabbed then begin
+          (* паника — ускорение *)
+          recalc_velocity_with_panic c;
+          (* случайное изменение направления *)
+          maybe_random_change_dir c;
+          (* злые преследуют здоровых *)
+          chase_nearest_healthy c;
+          (* шаг движения *)
+          c.x <- c.x +. c.vx *. dt;
+          c.y <- c.y +. c.vy *. dt;
+          (* отскоки *)
+          bounce_from_walls c;
+          (* река заражает *)
+          handle_river_contamination c;
+          (* рост берсерка *)
+          update_berserk_growth c;
+          (* если берсерк дорос до максимума — умирает *)
+          (match c.state with
+           | Berserk ->
+             let max_size = c.base_size *. berserk_grow_factor_max in
+             if c.size >= max_size -. 0.0001 then kill_creep c
+           | _ -> ());
+          (* обновление DOM *)
+          if c.alive then update_dom c;
+        end;
 
-      creep_thread c
+        if not c.alive then Lwt.return_unit else begin
+          (* заражаем других при контакте *)
+          handle_contact_infection c;
+          creep_thread c
+        end
+      end
     end
 
 (* --- создание нового крипа из репродукции --- *)
@@ -423,13 +473,71 @@ let add_creep_from_reproduction () =
     init_drag c;
     Lwt.async (fun () -> creep_thread c)
 
-(* --- GAME OVER оверлей --- *)
+(* --- очистка игры (DOM + состояние) --- *)
 
-let show_game_over_overlay () =
+let clear_game () =
+  game_over := true;
+
+  List.iter (fun c ->
+    c.alive <- false;
+    c.grabbed <- false;
+    Js.Opt.iter c.elt##.parentNode (fun p ->
+      Dom.removeChild p c.elt
+    )
+  ) !creeps;
+
+  (* удалить оверлей, если есть (без *_opt для совместимости) *)
+  (try
+     let ov = Dom_html.getElementById "game-over-overlay" in
+     Js.Opt.iter ov##.parentNode (fun p -> Dom.removeChild p ov)
+   with _ -> ());
+
+  creeps := [];
+  elapsed_time := 0.0
+
+(* --- взаимно-рекурсивный блок: старт, рестарт, оверлей, конец игры --- *)
+
+let rec start_game () =
+  Random.self_init ();
+
+  let game_div =
+    match Html.getElementById "game"
+          |> Html.CoerceTo.div
+          |> Js.Opt.to_option with
+    | None -> failwith "No #game div"
+    | Some d -> d
+  in
+  game_div_ref := Some game_div;
+
+  game_width := float_of_int game_div##.offsetWidth;
+  game_height := float_of_int game_div##.offsetHeight;
+
+  let created = List.init initial_creets (fun _ -> make_creep game_div) in
+  creeps := created;
+
+  List.iter
+    (fun c ->
+       init_drag c;
+       Lwt.async (fun () -> creep_thread c))
+    created;
+
+  (* глобальные потоки *)
+  Lwt.async reproduction_thread;
+  Lwt.async game_over_thread;
+  Lwt.async time_thread;
+  ()
+
+and restart_game () =
+  clear_game ();
+  game_over := false;
+  start_game ()
+
+and show_game_over_overlay () =
   match !game_div_ref with
   | None -> ()
   | Some game_div ->
     let overlay = Html.createDiv document in
+    overlay##.id := Js.string "game-over-overlay";
     let s = overlay##.style in
     s##.position := Js.string "absolute";
     s##.left := Js.string "0";
@@ -440,15 +548,41 @@ let show_game_over_overlay () =
     s##.display := Js.string "flex";
     ignore (s##setProperty (Js.string "justify-content") (Js.string "center") Js.Optdef.empty);
     ignore (s##setProperty (Js.string "align-items") (Js.string "center") Js.Optdef.empty);
-    s##.fontSize := Js.string "42px";
-    s##.color := Js.string "#ffffff";
-    s##.fontFamily := Js.string "sans-serif";
-    overlay##.innerHTML := Js.string "GAME OVER";
+
+    let box = Html.createDiv document in
+    let bs = box##.style in
+    bs##.display := Js.string "flex";
+    ignore (bs##setProperty (Js.string "flex-direction") (Js.string "column") Js.Optdef.empty);
+    ignore (bs##setProperty (Js.string "gap") (Js.string "18px") Js.Optdef.empty);
+    ignore (bs##setProperty (Js.string "align-items") (Js.string "center") Js.Optdef.empty);
+
+    let title = Html.createDiv document in
+    let ts = title##.style in
+    ts##.fontSize := Js.string "42px";
+    ts##.color := Js.string "#ffffff";
+    ts##.fontFamily := Js.string "sans-serif";
+    title##.textContent := Js.some (Js.string "GAME OVER");
+
+    let btn = Html.createButton document in
+    let bts = btn##.style in
+    bts##.fontSize := Js.string "20px";
+    bts##.padding := Js.string "10px 18px";
+    bts##.border := Js.string "0";
+    bts##.borderRadius := Js.string "10px";
+    bts##.cursor := Js.string "pointer";
+    btn##.textContent := Js.some (Js.string "Restart");
+
+    btn##.onclick := Html.handler (fun _ ->
+      restart_game ();
+      Js._false
+    );
+
+    Dom.appendChild box title;
+    Dom.appendChild box btn;
+    Dom.appendChild overlay box;
     Dom.appendChild game_div overlay
 
-(* --- мониторинг конца игры --- *)
-
-let rec game_over_thread () =
+and game_over_thread () =
   if !game_over then Lwt.return_unit
   else
     let%lwt () = Lwt_js.sleep 0.3 in
@@ -462,9 +596,7 @@ let rec game_over_thread () =
         game_over_thread ()
     end
 
-(* --- репродукция крипов --- *)
-
-let rec reproduction_thread () =
+and reproduction_thread () =
   if !game_over then Lwt.return_unit
   else
     let%lwt () = Lwt_js.sleep reproduction_interval in
@@ -474,43 +606,9 @@ let rec reproduction_thread () =
       reproduction_thread ()
     end
 
-(* --- инициализация игры --- *)
-
-let start_game () =
-  Random.self_init ();
-  (* получаем game div *)
-  let game_div =
-    match Html.getElementById "game"
-          |> Html.CoerceTo.div
-          |> Js.Opt.to_option with
-    | None -> failwith "No #game div"
-    | Some d -> d
-  in
-  game_div_ref := Some game_div;
-  (* размеры области *)
-  game_width := float_of_int game_div##.offsetWidth;
-  game_height := float_of_int game_div##.offsetHeight;
-
-  (* создаём стартовых крипов *)
-  let created =
-    List.init initial_creets (fun _ -> make_creep game_div)
-  in
-  creeps := created;
-
-  (* каждому крипу — drag-обработчики и отдельный поток *)
-  List.iter
-    (fun c ->
-       init_drag c;
-       Lwt.async (fun () -> creep_thread c))
-    created;
-
-  (* потоки репродукции и проверки конца игры *)
-  Lwt.async reproduction_thread;
-  Lwt.async game_over_thread;
-  ()
-
 let () =
   Eliom_client.onload (fun () ->
+      game_over := false;
       start_game ();
       ()
     )
@@ -540,8 +638,8 @@ let%shared () =
                ~a:[a_id "game-container";
                    a_style
                      "position:relative;\
-                      width:800px;\
-                      height:500px;\
+                      width:1100px;\
+                      height:700px;\
                       margin:30px auto;\
                       background:#111;\
                       border:2px solid #555;\
