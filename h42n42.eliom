@@ -37,6 +37,7 @@ let base_size = 24.0
 let base_speed = 60.0              (* базовая скорость здоровых *)
 let infection_slow_factor = 0.85   (* -15% скорости при заражении *)
 let berserk_grow_factor_max = 4.0  (* берсерк вырастает до 4x *)
+let berserk_time_grow = 10.0
 let mean_size_factor = 0.85        (* злой уменьшается до 0.85 размера *)
 let dir_change_prob = 0.02         (* шанс сменить направление на тик *)
 let infection_prob_per_tick = 0.02 (* 2% за итерацию при контакте *)
@@ -272,7 +273,7 @@ let update_berserk_growth (c : creep) =
     (* пусть за 20 секунд растёт до 4x *)
     let t = c.infection_age in
     let factor =
-      1.0 +. (berserk_grow_factor_max -. 1.0) *. (t /. 20.0)
+      1.0 +. (berserk_grow_factor_max -. 1.0) *. (t /. berserk_time_grow)
     in
     let factor = clamp 1.0 factor berserk_grow_factor_max in
     c.size <- c.base_size *. factor;
@@ -410,7 +411,6 @@ let rec time_thread () =
     time_thread ()
 
 (* --- поток для каждого крипа --- *)
-
 let rec creep_thread (c : creep) =
   if !game_over || not c.alive then Lwt.return_unit
   else
@@ -419,43 +419,46 @@ let rec creep_thread (c : creep) =
     else begin
       let dt = 1.0 /. 60.0 in
 
-      (* возраст заражения и смерть по таймеру *)
-      if is_contaminated_state c.state then begin
-        c.infection_age <- c.infection_age +. dt;
-        if c.infection_age >= infected_ttl then begin
-          kill_creep c;
-        end
-      end;
+      (* 1 Таймер смерти только для Sick/Mean *)
+      let died_by_ttl =
+        (c.state = Sick || c.state = Mean) &&
+        (let () = c.infection_age <- c.infection_age +. dt in
+         c.infection_age >= infected_ttl)
+      in
+      if died_by_ttl then begin
+        kill_creep c;
+        Lwt.return_unit
+      end else begin
 
-      if not c.alive then Lwt.return_unit else begin
+        (* 2 Движение/логика *)
         if not c.grabbed then begin
-          (* паника — ускорение *)
           recalc_velocity_with_panic c;
-          (* случайное изменение направления *)
           maybe_random_change_dir c;
-          (* злые преследуют здоровых *)
           chase_nearest_healthy c;
-          (* шаг движения *)
+
           c.x <- c.x +. c.vx *. dt;
           c.y <- c.y +. c.vy *. dt;
-          (* отскоки *)
+
           bounce_from_walls c;
-          (* река заражает *)
           handle_river_contamination c;
-          (* рост берсерка *)
+
+          (* 3 Рост берсерка: infection_age используется как "время роста" *)
+          if c.state = Berserk then c.infection_age <- c.infection_age +. dt;
           update_berserk_growth c;
-          (* если берсерк дорос до максимума — умирает *)
+
+          (* 4 Смерть берсерка только по размеру *)
           (match c.state with
            | Berserk ->
              let max_size = c.base_size *. berserk_grow_factor_max in
              if c.size >= max_size -. 0.0001 then kill_creep c
            | _ -> ());
-          (* обновление DOM *)
+
           if c.alive then update_dom c;
         end;
 
-        if not c.alive then Lwt.return_unit else begin
-          (* заражаем других при контакте *)
+        (* 5 Контактное заражение + следующий тик *)
+        if not c.alive then Lwt.return_unit
+        else begin
           handle_contact_infection c;
           creep_thread c
         end
