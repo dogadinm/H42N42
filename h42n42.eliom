@@ -34,7 +34,7 @@ let document = Html.document
 
 let initial_creets = 12
 let base_size = 24.0
-let base_speed = 90.0              (* базовая скорость здоровых *)
+let base_speed = 60.0              (* базовая скорость здоровых *)
 let infection_slow_factor = 0.85   (* -15% скорости при заражении *)
 let berserk_grow_factor_max = 4.0  (* берсерк вырастает до 4x *)
 let mean_size_factor = 0.85        (* злой уменьшается до 0.85 размера *)
@@ -632,7 +632,7 @@ let%shared () =
           (body [
              h1
                ~a:[a_style "text-align:center; font-family:sans-serif; color:#eee;"]
-               [txt "H42N42 — симуляция заражённых существ"];
+               [txt "H42N42"];
 
              div
                ~a:[a_id "game-container";
@@ -665,7 +665,7 @@ let%shared () =
                               background:#2e8bff;\
                               opacity:0.5;\
                               pointer-events:none;"]
-                       [txt "Токсичная река"];
+                       [txt "Toxic River"];
 
                      (* больница внутри того же поля *)
                      div
@@ -677,7 +677,7 @@ let%shared () =
                               background:#4caf50;\
                               opacity:0.5;\
                               pointer-events:none;"]
-                       [txt "Больница"];
+                       [txt "Hospital"];
                    ];
                ];
           ])))
