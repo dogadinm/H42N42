@@ -20,4 +20,4 @@ RUN opam install -y . --deps-only
 RUN opam exec -- make all
 
 EXPOSE 8080
-CMD ["bash", "-lc", "opam exec -- make run.local"]
+CMD ["bash", "-lc", "opam exec -- make run.original"]

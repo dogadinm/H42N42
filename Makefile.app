@@ -111,11 +111,6 @@ run:
 	$(PREFIX)bin/$(PROJECT_NAME)
 
 
-.PHONY: run.local
-
-run.local: byte | $(addprefix $(TEST_PREFIX),$(DIST_DIRS)) staticfiles
-	$(OCSIGENSERVER) -c $(PROJECT_NAME).conf.in
-
 ##----------------------------------------------------------------------
 
 ##----------------------------------------------------------------------

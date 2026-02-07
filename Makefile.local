@@ -1,0 +1,14 @@
+.PHONY: all clean fclean re run.local run.original
+
+run.local: byte
+	mkdir -p local/var/run local/var/log/h42n42 local/var/data/h42n42
+	ocsigenserver -c h42n42.conf.in
+
+run.original: install
+	mkdir -p local/var/run local/var/log/h42n42 local/var/data/h42n42
+	$(PREFIX)bin/$(PROJECT_NAME)
+
+fclean:: clean
+	rm -rf local
+
+re:: fclean all
