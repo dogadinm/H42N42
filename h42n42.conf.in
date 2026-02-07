@@ -1,0 +1,32 @@
+<ocsigen>
+  <server>
+    <port>8080</port>
+
+    <logdir>local/var/log/h42n42</logdir>
+    <datadir>local/var/data/h42n42</datadir>
+    <uploaddir>/tmp</uploaddir>
+    <commandpipe>local/var/run/h42n42-cmd</commandpipe>
+    <charset>utf-8</charset>
+
+    <!-- Static files -->
+    <extension findlib-package="ocsigenserver.ext.staticmod"/>
+
+    <!-- Ocsipersist backend (SQLite) -->
+    <extension findlib-package="ocsipersist-sqlite-config">
+      <database file="local/var/data/h42n42/ocsidb"/>
+    </extension>
+
+    <!-- Eliom -->
+    <extension findlib-package="eliom.server"/>
+
+    <host hostfilter="*" defaulthostname="localhost">
+      <site dir="/">
+        <eliommodule module="_build/default/h42n42.cma" />
+        <eliom />
+
+        <static dir="local/var/www/h42n42" />
+      </site>
+    </host>
+
+  </server>
+</ocsigen>
