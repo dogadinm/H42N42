@@ -1,0 +1,38 @@
+(dirs static local)
+
+(library
+ (name h42n42)
+ (public_name h42n42)
+ (modules (:standard))
+ (libraries
+  eliom.server
+  ocsipersist-sqlite
+  ocsipersist-sqlite.settings)
+ (library_flags (:standard -linkall))
+ (wrapped false)
+ (preprocess
+  (pps
+   eliom.ppx.server
+   lwt_ppx
+   js_of_ocaml-ppx_deriving_json
+   ocsigen-ppx-rpc
+   --
+   --rpc-raw)))
+
+(subdir
+ client
+ (executables
+  (names h42n42)
+  (modes js byte)
+  (libraries eliom.client)
+  (preprocess
+   (pps
+    js_of_ocaml-ppx
+    lwt_ppx))
+  (js_of_ocaml
+   (build_runtime_flags :standard --enable use-js-string)
+   (flags
+    :standard
+    --enable with-js-error
+    --enable use-js-string
+    --no-source-map))))

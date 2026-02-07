@@ -1,0 +1,20 @@
+opam-version: "2.0"
+name: "h42n42"
+version: "0.1"
+synopsis: "h42n42"
+
+depends: [
+  "ocaml" {>= "4.14" & < "5.0"}
+
+  "eliom" {>= "11.0.0" & < "12.0.0"}
+
+  "js_of_ocaml" {>= "5.0" & < "6.0"}
+
+  "ocsipersist-sqlite-config" {>= "2.0.0" & < "3.0.0"}
+  "ocsipersist-sqlite" {>= "2.0.0" & < "3.0.0"}
+
+  "dune" {>= "3.14.0" & < "4.0.0"}
+  "lwt_ppx"
+  "js_of_ocaml-ppx_deriving_json"
+  "ocsigen-ppx-rpc"
+]
