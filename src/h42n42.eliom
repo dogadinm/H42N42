@@ -923,8 +923,7 @@ let%shared () =
                             background:#2e8bff;\
                             opacity:0.5;\
                             pointer-events:none;"
-                       ]
-                       [txt "Toxic River"];
+                       ];
 
                      (* Hospital zone (bottom). *)
                      div
@@ -937,8 +936,7 @@ let%shared () =
                             background:#4caf50;\
                             opacity:0.5;\
                             pointer-events:none;"
-                       ]
-                       [txt "Hospital"];
+                       ];
                    ];
                ];
           ])))
