@@ -167,13 +167,16 @@ let game_over = ref false
 
 let rand_range a b = a +. Random.float (b -. a)
 
-let clamp a x b =
-  if x < a then a else if x > b then b else x
+(* let clamp a x b =
+  if x < a then a else if x > b then b else x *)
 
 (* Speed multiplier grows over time (difficulty), capped. *)
-let speed_factor () =
+(* let speed_factor () =
   let t = !elapsed_time in
-  clamp 1.0 (1.0 +. panic_speed_increase_per_sec *. t) (* 20.0*)
+  clamp 1.0 (1.0 +. panic_speed_increase_per_sec *. t) 20.0 *)
+
+let speed_factor () =
+  1.0 +. panic_speed_increase_per_sec *. !elapsed_time
 
 (* Desired speed based on state. *)
 let desired_speed (st: state) =
@@ -923,7 +926,8 @@ let%shared () =
                             background:#2e8bff;\
                             opacity:0.5;\
                             pointer-events:none;"
-                       ];
+                       ]
+                       [];
 
                      (* Hospital zone (bottom). *)
                      div
@@ -936,7 +940,8 @@ let%shared () =
                             background:#4caf50;\
                             opacity:0.5;\
                             pointer-events:none;"
-                       ];
+                       ]
+                       [];
                    ];
                ];
           ])))
