@@ -1,4 +1,17 @@
-(* h42n42.eliom — реализация проекта H42N42 на Eliom *)
+(* ************************************************************************** *)
+(*                                                                            *)
+(*   h42n42.eliom                                                              *)
+(*                                                                            *)
+(*   H42N42 project implementation using Eliom + js_of_ocaml + Lwt.            *)
+(*                                                                            *)
+(*   - Server side: registers a single page using TyXML (statically validated  *)
+(*     HTML structure).                                                       *)
+(*   - Client side: runs the game logic in the browser.                        *)
+(*     The OCaml client code interacts directly with the browser DOM           *)
+(*     (styles, events, append/remove nodes, etc.).                             *)
+(*   - Subject requirement: each creature is controlled by its own Lwt thread. *)
+(*                                                                            *)
+(* ************************************************************************** *)
 
 let%server application_name = "h42n42"
 let%client application_name = Eliom_client.get_application_name ()
@@ -8,9 +21,12 @@ module%shared App = Eliom_registration.App (struct
   let global_data_path = Some ["__global_data__"]
 end)
 
+(* Keep the <head> persistent across page navigation (SPA-like behavior). *)
 let%client _ = Eliom_client.persist_document_head ()
 
-(* -------- СЕРВИС ГЛАВНОЙ СТРАНИЦЫ -------- *)
+(* -------------------------------------------------------------------------- *)
+(* Main service (single page)                                                 *)
+(* -------------------------------------------------------------------------- *)
 
 let%server main_service =
   Eliom_service.create
@@ -20,7 +36,13 @@ let%server main_service =
 
 let%client main_service = ~%main_service
 
-(* -------- КЛИЕНТСКАЯ ЧАСТЬ -------- *)
+(* -------------------------------------------------------------------------- *)
+(* Client-side game logic                                                     *)
+(*                                                                            *)
+(* All code below runs in the browser (compiled with js_of_ocaml).             *)
+(* It manipulates DOM nodes directly and uses Lwt cooperative threads for      *)
+(* timing and concurrency.                                                    *)
+(* -------------------------------------------------------------------------- *)
 
 [%%client
 open Js_of_ocaml
@@ -32,42 +54,67 @@ let document = Html.document
 
 module D = Eliom_content.Html.D
 
-(* --- параметры игры (можешь балансить, но смысл не меняем) --- *)
+(* -------------------------------------------------------------------------- *)
+(* Game parameters (balance knobs)                                            *)
+(* -------------------------------------------------------------------------- *)
 
 let initial_creets = 10
 
-let base_size = 24.0
+let base_size  = 24.0
 let base_speed = 60.0
 
-let infection_slow_factor = 0.85          (* Sick moves 15% slower :contentReference[oaicite:8]{index=8} *)
-let infection_prob_per_tick = 0.02        (* 2% per contact/iteration :contentReference[oaicite:9]{index=9} *)
+(* Sick (and derived infected types) move slower than Healthy. *)
+let infection_slow_factor = 0.85
 
-let berserk_prob = 0.10                   (* check once every 10s after contamination :contentReference[oaicite:10]{index=10} *)
-let mean_prob    = 0.10                   (* check once every 10s after contamination :contentReference[oaicite:11]{index=11} *)
+(* Chance that infection transfers per tick while two creatures overlap. *)
+let infection_prob_per_tick = 0.02
 
-let evo_check_interval = 10.0             (* every 10 seconds after contamination :contentReference[oaicite:12]{index=12} *)
-let berserk_growth_interval = 10.0        (* +10% diameter every 10 seconds :contentReference[oaicite:13]{index=13} *)
-let berserk_growth_factor = 1.10
-let berserk_max_factor = 4.0              (* dies at 4× :contentReference[oaicite:14]{index=14} *)
+(* Evolution checks happen every 10 seconds after infection. *)
+let berserk_prob = 0.10
+let mean_prob    = 0.10
+let evo_check_interval = 10.0
 
-let mean_size_factor = 0.85               (* 15% smaller :contentReference[oaicite:15]{index=15} *)
-let mean_ttl = 60.0                       (* dies after exactly 1 minute :contentReference[oaicite:16]{index=16} *)
+(* Berserk: grows by +10% diameter every 10 seconds, dies at 4x base size. *)
+let berserk_growth_interval = 10.0
+let berserk_growth_factor   = 1.10
+let berserk_max_factor      = 4.0
 
-let dir_change_prob = 0.02                (* "not too frequently" *)
-let reproduction_interval = 5.0           (* spawn periodically while at least one healthy :contentReference[oaicite:17]{index=17} *)
-let panic_speed_increase_per_sec = 0.03   (* difficulty progression speed increase :contentReference[oaicite:18]{index=18} *)
+(* Mean: 85% size, dies after 60 seconds, actively chases nearest Healthy. *)
+let mean_size_factor = 0.85
+let mean_ttl         = 60.0
 
-let river_height = 80.0
+(* Movement randomness: direction changes rarely. *)
+let dir_change_prob = 0.02
+
+(* Reproduction: spawn periodically while at least one Healthy exists. *)
+let reproduction_interval = 5.0
+
+(* Difficulty progression: speed increases with elapsed time, capped. *)
+let panic_speed_increase_per_sec = 0.03
+
+(* Static map zones *)
+let river_height    = 80.0
 let hospital_height = 80.0
 
-(* --- состояние крипов --- *)
+(* -------------------------------------------------------------------------- *)
+(* Creature state                                                             *)
+(* -------------------------------------------------------------------------- *)
 
+(* Possible health states of a creature (Creet). *)
 type state =
   | Healthy
   | Sick
   | Berserk
   | Mean
 
+(* Representation of a single creature.
+   Each creature owns:
+   - its physical properties (position, velocity, size)
+   - its state and evolution timers
+   - its DOM element
+   - control flags for dragging
+   - 'alive' flag
+*)
 type creep = {
   mutable x       : float;
   mutable y       : float;
@@ -77,43 +124,65 @@ type creep = {
   base_size       : float;
   mutable state   : state;
 
-  (* timers *)
-  mutable infected_age : float;   (* time since became Sick/Berserk/Mean *)
-  mutable next_evo_check : float; (* next time (since infection) when we do 10s evolution check *)
-  mutable berserk_acc : float;    (* accum time for 10s growth steps *)
-  mutable mean_age : float;       (* time since became Mean *)
+  (* Timers: used for infected evolution and special behaviors. *)
+  mutable infected_age    : float;   (* time since infection *)
+  mutable next_evo_check  : float;   (* next evolution checkpoint time *)
+  mutable berserk_acc     : float;   (* accumulates time for Berserk growth steps *)
+  mutable mean_age        : float;   (* time since became Mean *)
 
-  elt             : Html.divElement Js.t;
+  (* DOM element representing the creature. *)
+  elt : Html.divElement Js.t;
 
-  mutable grabbed : bool;
-  mutable dragged_by_player : bool; (* true if currently in a user drag session *)
-  mutable alive   : bool;
+  (* Dragging flags *)
+  mutable grabbed           : bool;  (* true while mouse is down on it *)
+  mutable dragged_by_player : bool;  (* true during a player drag session *)
+
+  (* Life state *)
+  mutable alive : bool;
 }
 
-(* глобальные ссылки *)
+(* -------------------------------------------------------------------------- *)
+(* Global game state                                                          *)
+(* -------------------------------------------------------------------------- *)
 
+(* List of currently alive creatures (dead ones are removed). *)
 let creeps : creep list ref = ref []
+
+(* Reference to the main game container node. *)
 let game_div_ref : Html.divElement Js.t option ref = ref None
+
+(* Cached game dimensions (pixels). *)
 let game_width  : float ref = ref 800.0
 let game_height : float ref = ref 500.0
+
+(* Global elapsed time, used for difficulty progression. *)
 let elapsed_time : float ref = ref 0.0
+
+(* Global flag used to stop all running threads. *)
 let game_over = ref false
 
-(* --- утилиты --- *)
+(* -------------------------------------------------------------------------- *)
+(* Utility functions                                                          *)
+(* -------------------------------------------------------------------------- *)
 
 let rand_range a b = a +. Random.float (b -. a)
-let clamp a x b = if x < a then a else if x > b then b else x
 
+let clamp a x b =
+  if x < a then a else if x > b then b else x
+
+(* Speed multiplier grows over time (difficulty), capped. *)
 let speed_factor () =
   let t = !elapsed_time in
   clamp 1.0 (1.0 +. panic_speed_increase_per_sec *. t) 3.0
 
+(* Desired speed based on state. *)
 let desired_speed (st: state) =
   let base = base_speed *. speed_factor () in
   match st with
   | Healthy -> base
-  | Sick | Berserk | Mean -> base *. infection_slow_factor  (* PDF explicitly says Sick slower; ok to keep same slow for special types *)
+  | Sick | Berserk | Mean -> base *. infection_slow_factor
 
+(* Visual feedback: state -> color. *)
 let set_state_color (c : creep) =
   let style = c.elt##.style in
   let color =
@@ -125,6 +194,7 @@ let set_state_color (c : creep) =
   in
   style##.backgroundColor := Js.string color
 
+(* Update the DOM element position and size. *)
 let update_dom (c : creep) =
   let s = c.elt##.style in
   s##.left   := Js.string (Printf.sprintf "%gpx" c.x);
@@ -137,6 +207,7 @@ let radius (c : creep) = c.size /. 2.0
 let center (c : creep) =
   (c.x +. radius c, c.y +. radius c)
 
+(* Squared distance between two creature centers (avoids sqrt). *)
 let dist2 (c1 : creep) (c2 : creep) =
   let x1,y1 = center c1 in
   let x2,y2 = center c2 in
@@ -156,8 +227,15 @@ let any_healthy () =
 let healthy_count () =
   List.fold_left (fun acc c -> if is_healthy c then acc + 1 else acc) 0 !creeps
 
-(* --- убийство крипа --- *)
+(* -------------------------------------------------------------------------- *)
+(* Creature removal                                                           *)
+(* -------------------------------------------------------------------------- *)
 
+(* Kill a creature:
+   - remove it from the DOM
+   - remove it from the global list
+   - stop its thread by making alive=false
+*)
 let kill_creep (c : creep) =
   if not c.alive then ()
   else begin
@@ -170,18 +248,22 @@ let kill_creep (c : creep) =
     creeps := List.filter (fun x -> x != c) !creeps
   end
 
-(* --- заражение / лечение / эволюция --- *)
+(* -------------------------------------------------------------------------- *)
+(* Infection / healing / evolution                                            *)
+(* -------------------------------------------------------------------------- *)
 
+(* Random initial velocity for a Healthy creature. *)
 let random_velocity () =
   let angle = rand_range 0.0 (2.0 *. Float.pi) in
   let speed = desired_speed Healthy in
   (speed *. cos angle, speed *. sin angle)
 
+(* Normalize current velocity direction to match desired speed for current state. *)
 let renormalize_velocity (c : creep) =
   let cur = sqrt (c.vx *. c.vx +. c.vy *. c.vy) in
   let target = desired_speed c.state in
   if cur <= 0.000001 then begin
-    (* если вдруг ноль — зададим случайно *)
+    (* If velocity is near zero, re-randomize direction. *)
     let vx, vy = random_velocity () in
     c.vx <- vx; c.vy <- vy
   end else begin
@@ -190,6 +272,7 @@ let renormalize_velocity (c : creep) =
     c.vy <- c.vy *. k
   end
 
+(* Infect a Healthy creature -> Sick, resetting all evolution timers. *)
 let become_sick (c : creep) =
   if (not c.alive) || c.state <> Healthy then ()
   else begin
@@ -204,25 +287,30 @@ let become_sick (c : creep) =
     update_dom c
   end
 
+(* Sick evolution -> Berserk.
+   Berserk starts at base size and grows stepwise every 10 seconds. *)
 let become_berserk (c : creep) =
   c.state <- Berserk;
-  c.size <- c.base_size;       (* starts at base, then grows stepwise *)
+  c.size <- c.base_size;
   c.berserk_acc <- 0.0;
-  (* infected_age continues; but evolution checks stop because state != Sick *)
   renormalize_velocity c;
   set_state_color c;
   update_dom c
 
+(* Sick evolution -> Mean.
+   Mean becomes smaller and starts chasing the nearest Healthy creature. *)
 let become_mean (c : creep) =
   c.state <- Mean;
-  c.size <- c.base_size *. mean_size_factor;  (* 85% :contentReference[oaicite:19]{index=19} *)
+  c.size <- c.base_size *. mean_size_factor;
   c.mean_age <- 0.0;
   renormalize_velocity c;
   set_state_color c;
   update_dom c
 
+(* Heal a creature.
+   Subject rule: only Sick can be healed, and only by manual drag-drop
+   into the hospital zone (enforced in the drag code). *)
 let heal (c : creep) =
-  (* Только обычный Sick лечится; Berserk/Mean нельзя лечить :contentReference[oaicite:20]{index=20} *)
   if not c.alive then ()
   else if c.state <> Sick then ()
   else begin
@@ -237,30 +325,42 @@ let heal (c : creep) =
     update_dom c
   end
 
-(* --- зоны --- *)
+(* -------------------------------------------------------------------------- *)
+(* Zones: river and hospital                                                  *)
+(* -------------------------------------------------------------------------- *)
 
+(* River: touching the toxic river at the top infects Healthy creatures. *)
 let is_in_river (c : creep) =
-  (* touch toxic river at top -> sick immediately :contentReference[oaicite:21]{index=21} *)
   c.y <= river_height -. c.size *. 0.3
 
+(* Hospital: bottom zone where Sick creatures can be healed if manually dropped. *)
 let is_in_hospital (c : creep) =
-  (* hospital at bottom :contentReference[oaicite:22]{index=22} *)
   c.y +. c.size >= !game_height -. hospital_height +. c.size *. 0.3
 
-(* --- создание крипов (TyXML для динамических элементов) --- *)
+(* -------------------------------------------------------------------------- *)
+(* DOM creation (TyXML -> DOM)                                                *)
+(* -------------------------------------------------------------------------- *)
 
+(* Create a DOM element for a creature using TyXML.
+   This satisfies the subject requirement "statically validate HTML":
+   TyXML combinators enforce valid structure at compile time. *)
 let create_dom_creep (game_div : Html.divElement Js.t) :
   Html.divElement Js.t * float * float =
   let node =
     D.div
       ~a:[
-        D.a_style "position:absolute;border-radius:50%;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.6);"
+        D.a_style
+          "position:absolute;\
+           border-radius:50%;\
+           cursor:pointer;\
+           box-shadow:0 0 6px rgba(0,0,0,0.6);"
       ]
       []
   in
-  (* ВАЖНО: используем To_dom из Eliom, а не Tyxml_js *)
+  (* Convert TyXML node into a real DOM element. *)
   let d = Eliom_content.Html.To_dom.of_div node in
 
+  (* Spawn away from the river/hospital zones. *)
   let margin = 30.0 in
   let x = rand_range margin (!game_width -. margin -. base_size) in
   let y = rand_range (river_height +. margin)
@@ -268,6 +368,7 @@ let create_dom_creep (game_div : Html.divElement Js.t) :
   Dom.appendChild game_div d;
   (d, x, y)
 
+(* Instantiate a new creature with random position and velocity. *)
 let make_creep (game_div : Html.divElement Js.t) : creep =
   let elt, x, y = create_dom_creep game_div in
   let vx, vy = random_velocity () in
@@ -291,8 +392,11 @@ let make_creep (game_div : Html.divElement Js.t) : creep =
   update_dom c;
   c
 
-(* --- динамика движения --- *)
+(* -------------------------------------------------------------------------- *)
+(* Movement logic                                                             *)
+(* -------------------------------------------------------------------------- *)
 
+(* Rare random direction change ("not too frequently"). *)
 let maybe_random_change_dir (c : creep) =
   if Random.float 1.0 < dir_change_prob then begin
     let angle_delta = rand_range (-0.6) 0.6 in
@@ -302,8 +406,9 @@ let maybe_random_change_dir (c : creep) =
     c.vy <- speed *. sin angle;
   end
 
+(* Bounce on borders (reflection).
+   Creatures do not collide with each other (they can overlap). *)
 let bounce_from_walls (c : creep) =
-  (* bounce at edges (angle incidence = reflection) :contentReference[oaicite:24]{index=24} *)
   let maxx = !game_width -. c.size in
   let maxy = !game_height -. c.size in
 
@@ -323,18 +428,21 @@ let bounce_from_walls (c : creep) =
     c.vy <- -. c.vy;
   end
 
+(* River contamination:
+   Subject rule: a dragged creature is invulnerable while being dragged. *)
 let handle_river_contamination (c : creep) =
-  (* Invulnerable while dragging :contentReference[oaicite:25]{index=25} *)
   if c.grabbed || not c.alive then () else
   if c.state = Healthy && is_in_river c then become_sick c
 
+(* Contact infection:
+   Infected creature may infect overlapping Healthy creatures.
+   Dragged creatures are invulnerable and cannot be infected. *)
 let handle_contact_infection (src : creep) =
   if (not src.alive) then ()
   else if (not (is_contaminated_state src.state)) || src.grabbed then ()
   else
     List.iter
       (fun dst ->
-         (* healthy + not being dragged => can be infected :contentReference[oaicite:26]{index=26} *)
          if dst.alive && dst.state = Healthy && (not dst.grabbed) then
            let rsum = radius src +. radius dst in
            if dist2 src dst <= rsum *. rsum then
@@ -342,8 +450,8 @@ let handle_contact_infection (src : creep) =
                become_sick dst)
       !creeps
 
+(* Mean behavior: chase the nearest Healthy creature (not being dragged). *)
 let chase_nearest_healthy (c : creep) =
-  (* Mean actively chases nearest healthy :contentReference[oaicite:27]{index=27} *)
   if (not c.alive) || c.state <> Mean then () else
   let healthy_list =
     List.filter (fun h -> is_healthy h && (not h.grabbed)) !creeps
@@ -376,35 +484,37 @@ let chase_nearest_healthy (c : creep) =
       c.vx <- sp *. dirx;
       c.vy <- sp *. diry
 
-(* --- эволюция Sick -> Berserk/Mean (check once every 10 seconds) --- *)
+(* -------------------------------------------------------------------------- *)
+(* Sick -> Berserk / Mean evolution                                            *)
+(* -------------------------------------------------------------------------- *)
 
+(* Evolution check: while Sick, every 10 seconds do one random evolution test.
+   A creature cannot become both Berserk and Mean. *)
 let maybe_evolve (c : creep) =
-  (* Only while state = Sick; cannot become both :contentReference[oaicite:28]{index=28} *)
   if c.state <> Sick then ()
   else if c.infected_age +. 1e-9 < c.next_evo_check then ()
   else begin
-    (* one check per 10s mark; if stays Sick, schedule next *)
     let r = Random.float 1.0 in
     if r < berserk_prob then become_berserk c
     else if r < berserk_prob +. mean_prob then become_mean c
     else c.next_evo_check <- c.next_evo_check +. evo_check_interval
   end
 
+(* Berserk growth: +10% diameter every 10 seconds; die at 4x base size. *)
 let update_berserk_growth (c : creep) (dt : float) =
   if c.state <> Berserk then () else begin
-    (* +10% every 10 seconds :contentReference[oaicite:29]{index=29} *)
     c.berserk_acc <- c.berserk_acc +. dt;
     while c.berserk_acc +. 1e-9 >= berserk_growth_interval do
       c.berserk_acc <- c.berserk_acc -. berserk_growth_interval;
       c.size <- c.size *. berserk_growth_factor;
     done;
-    (* death at 4× original diameter :contentReference[oaicite:30]{index=30} *)
     if c.size +. 1e-9 >= c.base_size *. berserk_max_factor then
       kill_creep c
     else
       update_dom c
   end
 
+(* Mean death timer: dies after exactly 60 seconds in Mean state. *)
 let update_mean_death (c : creep) (dt : float) =
   if c.state <> Mean then () else begin
     c.mean_age <- c.mean_age +. dt;
@@ -412,18 +522,25 @@ let update_mean_death (c : creep) (dt : float) =
       kill_creep c
   end
 
-(* --- перетаскивание мышью --- *)
+(* -------------------------------------------------------------------------- *)
+(* Drag & Drop (mouse events)                                                 *)
+(* -------------------------------------------------------------------------- *)
 
+(* Initialize drag-and-drop behavior for a creature.
+   Subject rules enforced here:
+   - Berserk and Mean cannot be grabbed / healed.
+   - While being dragged, a creature is invulnerable to contamination.
+   - Creature can be moved anywhere (no clamping during drag).
+   - Healing happens only when player drops a Sick creature in hospital. *)
 let init_drag (game_div : Html.divElement Js.t) (c : creep) =
   let open Lwt_js_events in
 
-  (* Berserk/Mean cannot be grabbed/healed :contentReference[oaicite:31]{index=31} *)
   let can_grab () =
     c.alive && (c.state = Healthy || c.state = Sick)
   in
 
+  (* Convert mouse client coordinates into local coordinates inside game_div. *)
   let get_local_coords (ev : Html.mouseEvent Js.t) =
-    (* clientX/Y -> coords relative to game_div *)
     let rect = game_div##getBoundingClientRect in
     let mx = float_of_int ev##.clientX in
     let my = float_of_int ev##.clientY in
@@ -453,7 +570,7 @@ let init_drag (game_div : Html.divElement Js.t) (c : creep) =
                 let dx = cx -. cx0 in
                 let dy = cy -. cy0 in
 
-                (* drop anywhere INCLUDING outside boundaries -> NO clamp :contentReference[oaicite:32]{index=32} *)
+                (* NO clamping: allow dropping anywhere, even outside boundaries. *)
                 c.x <- start_x +. dx;
                 c.y <- start_y +. dy;
 
@@ -464,7 +581,7 @@ let init_drag (game_div : Html.divElement Js.t) (c : creep) =
              (mouseup document >>= fun _ ->
                 c.grabbed <- false;
 
-                (* heal only if manually dropped in hospital, and ONLY Sick :contentReference[oaicite:33]{index=33} *)
+                (* Heal only on manual drop into hospital, and only if Sick. *)
                 if c.alive && c.dragged_by_player && is_in_hospital c then
                   heal c;
 
@@ -477,8 +594,11 @@ let init_drag (game_div : Html.divElement Js.t) (c : creep) =
          Lwt.return_unit
       ))
 
-(* --- глобальный поток времени --- *)
+(* -------------------------------------------------------------------------- *)
+(* Global time thread                                                         *)
+(* -------------------------------------------------------------------------- *)
 
+(* Global time thread: updates elapsed_time for difficulty progression. *)
 let rec time_thread () =
   if !game_over then Lwt.return_unit
   else
@@ -486,8 +606,20 @@ let rec time_thread () =
     elapsed_time := !elapsed_time +. (1.0 /. 60.0);
     time_thread ()
 
-(* --- поток для каждого крипа --- *)
+(* -------------------------------------------------------------------------- *)
+(* Per-creature thread (SUBJECT REQUIREMENT)                                   *)
+(* -------------------------------------------------------------------------- *)
 
+(* Main behavior loop for a single creature.
+   SUBJECT REQUIREMENT:
+   Each creature must be controlled by its own Lwt cooperative thread.
+
+   This thread:
+   - updates timers (infection age, evolution checkpoints)
+   - updates special behaviors (Mean chase, Berserk growth)
+   - moves the creature and bounces it on borders
+   - handles infection and updates the DOM
+   - terminates when creature dies or game ends *)
 let rec creep_thread (game_div : Html.divElement Js.t) (c : creep) =
   if !game_over || not c.alive then Lwt.return_unit
   else
@@ -496,50 +628,53 @@ let rec creep_thread (game_div : Html.divElement Js.t) (c : creep) =
     else begin
       let dt = 1.0 /. 60.0 in
 
-      (* timers only for contaminated kinds *)
-      if is_contaminated_state c.state then c.infected_age <- c.infected_age +. dt;
+      (* Timers only for contaminated states. *)
+      if is_contaminated_state c.state then
+        c.infected_age <- c.infected_age +. dt;
 
-      (* evolve check: once every 10s after contamination while Sick :contentReference[oaicite:34]{index=34} *)
+      (* Evolution check: once per 10s while Sick. *)
       maybe_evolve c;
 
-      (* mean death: exactly 1 minute being mean :contentReference[oaicite:35]{index=35} *)
+      (* Mean: dies after 60 seconds. *)
       update_mean_death c dt;
 
-      (* berserk growth & death by size :contentReference[oaicite:36]{index=36} *)
+      (* Berserk: grows, may die by size threshold. *)
       if c.alive then update_berserk_growth c dt;
 
       if (not c.alive) then Lwt.return_unit
       else begin
         if not c.grabbed then begin
-          (* keep speed consistent with difficulty progression *)
+          (* Maintain speed according to difficulty progression. *)
           renormalize_velocity c;
 
-          (* behavior *)
+          (* Behavior & movement. *)
           maybe_random_change_dir c;
           chase_nearest_healthy c;
 
-          (* move *)
           c.x <- c.x +. c.vx *. dt;
           c.y <- c.y +. c.vy *. dt;
 
-          (* boundaries *)
+          (* Borders *)
           bounce_from_walls c;
 
-          (* river contamination *)
+          (* River infection (dragged creatures are protected). *)
           handle_river_contamination c;
 
           update_dom c;
         end;
 
-        (* contact infection (no collisions, only contamination) :contentReference[oaicite:37]{index=37} *)
+        (* Contact infection (no physical collisions). *)
         handle_contact_infection c;
 
         creep_thread game_div c
       end
     end
 
-(* --- репродукция --- *)
+(* -------------------------------------------------------------------------- *)
+(* Reproduction                                                               *)
+(* -------------------------------------------------------------------------- *)
 
+(* Spawn one new creature and start its per-creature thread. *)
 let add_creep_from_reproduction () =
   match !game_div_ref with
   | None -> ()
@@ -549,6 +684,7 @@ let add_creep_from_reproduction () =
     init_drag game_div c;
     Lwt.async (fun () -> creep_thread game_div c)
 
+(* Reproduction loop: every N seconds, spawn while at least one Healthy exists. *)
 let rec reproduction_thread () =
   if !game_over then Lwt.return_unit
   else
@@ -559,8 +695,11 @@ let rec reproduction_thread () =
       reproduction_thread ()
     end
 
-(* --- очистка / рестарт / game over overlay --- *)
+(* -------------------------------------------------------------------------- *)
+(* Cleanup / restart / game over overlay                                      *)
+(* -------------------------------------------------------------------------- *)
 
+(* Remove all creatures and reset globals. *)
 let clear_game () =
   game_over := true;
 
@@ -581,6 +720,7 @@ let clear_game () =
   creeps := [];
   elapsed_time := 0.0
 
+(* Show "GAME OVER" overlay in the DOM. *)
 let rec show_game_over_overlay () =
   match !game_div_ref with
   | None -> ()
@@ -621,27 +761,27 @@ let rec show_game_over_overlay () =
     bts##.cursor := Js.string "pointer";
     btn##.textContent := Js.some (Js.string "Restart");
 
+    (* Restart = clear everything and start again. *)
     let restart () =
       clear_game ();
       game_over := false;
-      (* стартуем заново *)
-      (match !game_div_ref with
-       | None -> ()
-       | Some gd ->
-         game_width := float_of_int gd##.offsetWidth;
-         game_height := float_of_int gd##.offsetHeight;
+      match !game_div_ref with
+      | None -> ()
+      | Some gd ->
+        game_width := float_of_int gd##.offsetWidth;
+        game_height := float_of_int gd##.offsetHeight;
 
-         let created = List.init initial_creets (fun _ -> make_creep gd) in
-         creeps := created;
-         List.iter (fun c ->
-           init_drag gd c;
-           Lwt.async (fun () -> creep_thread gd c)
-         ) created;
+        let created = List.init initial_creets (fun _ -> make_creep gd) in
+        creeps := created;
 
-         Lwt.async reproduction_thread;
-         Lwt.async time_thread;
-         Lwt.async game_over_thread;
-      )
+        List.iter (fun c ->
+          init_drag gd c;
+          Lwt.async (fun () -> creep_thread gd c)
+        ) created;
+
+        Lwt.async reproduction_thread;
+        Lwt.async time_thread;
+        Lwt.async game_over_thread;
     in
 
     btn##.onclick := Html.handler (fun _ ->
@@ -654,13 +794,21 @@ let rec show_game_over_overlay () =
     Dom.appendChild overlay box;
     Dom.appendChild game_div overlay
 
+(* Game over detection thread.
+   Subject: the game ends when no Healthy remain AND all living creatures
+   are contaminated (or dead). Since dead creatures are removed from the list,
+   "all living are contaminated" means: no Healthy in the list. *)
 and game_over_thread () =
   if !game_over then Lwt.return_unit
   else
     Lwt_js.sleep 0.3 >>= fun () ->
     if !game_over then Lwt.return_unit
     else begin
-      (* game ends when no healthy remains :contentReference[oaicite:38]{index=38} *)
+      (* NOTE:
+         If you want the strictest reading of the subject:
+         - End when there are no Healthy creatures remaining.
+         Since the list contains only alive creatures, this implies
+         all remaining creatures are contaminated. *)
       if healthy_count () = 0 then begin
         game_over := true;
         show_game_over_overlay ();
@@ -669,8 +817,14 @@ and game_over_thread () =
         game_over_thread ()
     end
 
-(* --- старт --- *)
+(* -------------------------------------------------------------------------- *)
+(* Game start                                                                 *)
+(* -------------------------------------------------------------------------- *)
 
+(* Initialize the game:
+   - locate DOM container
+   - spawn initial creatures
+   - start all required threads *)
 let start_game () =
   Random.self_init ();
 
@@ -691,13 +845,16 @@ let start_game () =
 
   List.iter (fun c ->
     init_drag game_div c;
+    (* SUBJECT REQUIREMENT: each creature runs in its own Lwt thread. *)
     Lwt.async (fun () -> creep_thread game_div c)
   ) created;
 
+  (* Additional global threads. *)
   Lwt.async reproduction_thread;
   Lwt.async time_thread;
   Lwt.async game_over_thread
 
+(* Start when the DOM is ready. *)
 let () =
   Eliom_client.onload (fun () ->
     game_over := false;
@@ -706,7 +863,9 @@ let () =
   )
 ]
 
-(* -------- РЕГИСТРАЦИЯ СЕРВИСА И РАЗМЕТКА -------- *)
+(* -------------------------------------------------------------------------- *)
+(* Server-side page generation (TyXML statically validated HTML)               *)
+(* -------------------------------------------------------------------------- *)
 
 let%shared () =
   App.register ~service:main_service (fun () () ->
@@ -715,57 +874,70 @@ let%shared () =
         html
           (head
              (title (txt "H42N42"))
-             [ css_link
+             [
+               (* Statically typed HTML + CSS link. *)
+               css_link
                  ~uri:
                    (make_uri
                       ~service:(Eliom_service.static_dir ())
                       ["css"; "h42n42.css"])
-                 () ])
+                 ()
+             ])
           (body [
              h1
                ~a:[a_style "text-align:center; font-family:sans-serif; color:#eee;"]
                [txt "H42N42"];
 
              div
-               ~a:[a_id "game-container";
-                   a_style
-                     "position:relative;\
-                      width:1100px;\
-                      height:700px;\
-                      margin:30px auto;\
-                      background:#111;\
-                      border:2px solid #555;\
-                      box-shadow:0 0 15px rgba(0,0,0,0.6);\
-                      overflow:hidden;"]
+               ~a:[
+                 a_id "game-container";
+                 a_style
+                   "position:relative;\
+                    width:1100px;\
+                    height:700px;\
+                    margin:30px auto;\
+                    background:#111;\
+                    border:2px solid #555;\
+                    box-shadow:0 0 15px rgba(0,0,0,0.6);\
+                    overflow:hidden;"
+               ]
                [
                  div
-                   ~a:[a_id "game";
-                       a_style
-                         "position:absolute;\
-                          left:0; top:0;\
-                          width:100%; height:100%;\
-                          overflow:hidden;"]
+                   ~a:[
+                     a_id "game";
+                     a_style
+                       "position:absolute;\
+                        left:0; top:0;\
+                        width:100%; height:100%;\
+                        overflow:hidden;"
+                   ]
                    [
+                     (* Toxic river zone (top). *)
                      div
-                       ~a:[a_id "river";
-                           a_style
-                             "position:absolute;\
-                              left:0; top:0;\
-                              width:100%; height:80px;\
-                              background:#2e8bff;\
-                              opacity:0.5;\
-                              pointer-events:none;"]
+                       ~a:[
+                         a_id "river";
+                         a_style
+                           "position:absolute;\
+                            left:0; top:0;\
+                            width:100%; height:80px;\
+                            background:#2e8bff;\
+                            opacity:0.5;\
+                            pointer-events:none;"
+                       ]
                        [txt "Toxic River"];
 
+                     (* Hospital zone (bottom). *)
                      div
-                       ~a:[a_id "hospital";
-                           a_style
-                             "position:absolute;\
-                              left:0; bottom:0;\
-                              width:100%; height:80px;\
-                              background:#4caf50;\
-                              opacity:0.5;\
-                              pointer-events:none;"]
+                       ~a:[
+                         a_id "hospital";
+                         a_style
+                           "position:absolute;\
+                            left:0; bottom:0;\
+                            width:100%; height:80px;\
+                            background:#4caf50;\
+                            opacity:0.5;\
+                            pointer-events:none;"
+                       ]
                        [txt "Hospital"];
                    ];
                ];
