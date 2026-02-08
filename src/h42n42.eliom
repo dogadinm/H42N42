@@ -58,7 +58,7 @@ module D = Eliom_content.Html.D
 (* Game parameters (balance knobs)                                            *)
 (* -------------------------------------------------------------------------- *)
 
-let initial_creets = 10
+let initial_creets = 7
 
 let base_size  = 24.0
 let base_speed = 60.0
@@ -173,7 +173,7 @@ let clamp a x b =
 (* Speed multiplier grows over time (difficulty), capped. *)
 let speed_factor () =
   let t = !elapsed_time in
-  clamp 1.0 (1.0 +. panic_speed_increase_per_sec *. t) 3.0
+  clamp 1.0 (1.0 +. panic_speed_increase_per_sec *. t) (* 20.0*)
 
 (* Desired speed based on state. *)
 let desired_speed (st: state) =
